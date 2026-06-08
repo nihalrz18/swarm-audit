@@ -56,9 +56,9 @@ function AuditContent() {
 
   const [agents,       setAgents]       = useState<Record<string, AgentState>>(INITIAL_AGENTS);
   const [termLines,    setTermLines]    = useState<TerminalLine[]>([]);
-  const [vulns,        setVulns]        = useState<unknown[]>([]);
-  const [chains,       setChains]       = useState<unknown[]>([]);
-  const [riskData,     setRiskData]     = useState<unknown>(null);
+  const [vulns,        setVulns]        = useState<any[]>([]);
+  const [chains,       setChains]       = useState<any[]>([]);
+  const [riskData,     setRiskData]     = useState<any>(null);
   const [reportReady,  setReportReady]  = useState(false);
   const [totalRisk,    setTotalRisk]    = useState<number>(0);
   const [wsStatus,     setWsStatus]     = useState<string>('connecting');
@@ -93,14 +93,14 @@ function AuditContent() {
       const d = data as Record<string, unknown>;
 
       if (Array.isArray(d.vulnerabilities) && d.vulnerabilities.length > 0) {
-        setVulns(prev => [...prev, ...d.vulnerabilities as unknown[]]);
+        setVulns(prev => [...prev, ...d.vulnerabilities as any[]]);
       }
       if (Array.isArray(d.attack_chains)) {
-        setChains(d.attack_chains as unknown[]);
+        setChains(d.attack_chains as any[]);
       }
       if (Array.isArray(d.scored_vulnerabilities) && d.scored_vulnerabilities.length > 0) {
         // Replace vulns with scored versions
-        setVulns(d.scored_vulnerabilities as unknown[]);
+        setVulns(d.scored_vulnerabilities as any[]);
       }
       if (typeof d.total_risk_usd === 'number' || d.risk_breakdown) {
         setRiskData(d);
