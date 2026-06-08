@@ -1,6 +1,6 @@
-'use client';
+﻿'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, Suspense } from 'react';
 import { useParams, useSearchParams } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
@@ -48,7 +48,7 @@ const AGENT_ORDER = [
 ];
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
-export default function AuditPage() {
+function AuditContent() {
   const params       = useParams();
   const searchParams = useSearchParams();
   const sessionId    = params.sessionId as string;
@@ -254,5 +254,13 @@ export default function AuditPage() {
         </aside>
       </div>
     </div>
+  );
+}
+
+export default function AuditPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-[#0d1117]" />}>
+      <AuditContent />
+    </Suspense>
   );
 }
