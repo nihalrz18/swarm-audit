@@ -66,7 +66,7 @@ def estimate_cvss(severity_raw: str) -> float:
 
 def run_semgrep(clone_path: str, timeout: int = 120) -> List[Dict[str, Any]]:
     """
-    Execute Semgrep against clone_path with OWASP + secrets ruleset.
+    Execute Semgrep against clone_path with OWASP ruleset.
     Returns raw list of finding dicts from Semgrep JSON output.
     """
     try:
@@ -74,13 +74,11 @@ def run_semgrep(clone_path: str, timeout: int = 120) -> List[Dict[str, Any]]:
             [
                 "semgrep",
                 "--config=p/owasp-top-ten",
-                "--config=p/sql-injection",
-                "--config=p/xss",
-                "--config=p/secrets",
                 "--json",
                 "--quiet",
-                "--timeout=60",
-                "--max-memory=512",
+                "--jobs=1",
+                "--timeout=30",
+                "--max-memory=150",
                 clone_path,
             ],
             capture_output=True,

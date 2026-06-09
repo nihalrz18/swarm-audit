@@ -4,6 +4,7 @@ Streams live events to the frontend via WebSocket.
 """
 import asyncio
 import json
+import gc
 import os
 import shutil
 import time
@@ -39,7 +40,7 @@ class SwarmOrchestrator:
                 }
             ],
             "temperature": 0.1,
-            "max_tokens":  4096,
+            "max_tokens":  2048,
         }
 
     # ── WebSocket event helper ─────────────────────────────────────────────────
@@ -100,53 +101,47 @@ class SwarmOrchestrator:
             )
 
             # ═══════════════════════════════════════════════════════════════
-            # PHASE 2: Parallel cross-layer scanning
+            # PHASE 2: Sequential cross-layer scanning (saves memory vs parallel)
             # ═══════════════════════════════════════════════════════════════
-            for name, atype, msg in [
-                ("SAST Agent",       "sast",       "Running Semgrep OWASP Top-10…"),
-                ("Dependency Agent", "dependency", "Querying OSV.dev CVE database…"),
-                ("Secrets Agent",    "secrets",    "Scanning for hardcoded secrets…"),
-                ("API Agent",        "api",        "Discovering API endpoints & auth gaps…"),
-            ]:
-                await self.send_event(name, atype, "working", msg)
-
-            sast_r, dep_r, sec_r, api_r = await asyncio.gather(
-                asyncio.wait_for(
-                    asyncio.to_thread(SASTAgent(self.llm_config).run, scan_result),
-                    timeout=120,
-                ),
-                asyncio.wait_for(
-                    asyncio.to_thread(DependencyAgent(self.llm_config).run, scan_result),
-                    timeout=60,
-                ),
-                asyncio.wait_for(
-                    asyncio.to_thread(SecretsAgent(self.llm_config).run, scan_result),
-                    timeout=60,
-                ),
-                asyncio.wait_for(
-                    asyncio.to_thread(APIAgent(self.llm_config).run, scan_result),
-                    timeout=60,
-                ),
-                return_exceptions=True,
+            await self.send_event("SAST Agent", "sast", "working", "Running Semgrep OWASP Top-10…")
+            sast_r = await asyncio.wait_for(
+                asyncio.to_thread(SASTAgent(self.llm_config).run, scan_result),
+                timeout=120,
             )
-
             sast_r = self._safe(sast_r, {"vulnerabilities": []})
-            dep_r  = self._safe(dep_r,  {"vulnerabilities": []})
-            sec_r  = self._safe(sec_r,  {"vulnerabilities": []})
-            api_r  = self._safe(api_r,  {"vulnerabilities": []})
+            await self.send_event("SAST Agent", "sast", "done",
+                f"Found {len(sast_r['vulnerabilities'])} code vulnerabilities", sast_r)
+            gc.collect()
 
-            await self.send_event("SAST Agent",       "sast",       "done",
-                f"Found {len(sast_r['vulnerabilities'])} code vulnerabilities",
-                sast_r)
+            await self.send_event("Dependency Agent", "dependency", "working", "Querying OSV.dev CVE database…")
+            dep_r = await asyncio.wait_for(
+                asyncio.to_thread(DependencyAgent(self.llm_config).run, scan_result),
+                timeout=60,
+            )
+            dep_r = self._safe(dep_r, {"vulnerabilities": []})
             await self.send_event("Dependency Agent", "dependency", "done",
-                f"Found {len(dep_r['vulnerabilities'])} CVE issues",
-                dep_r)
-            await self.send_event("Secrets Agent",    "secrets",    "done",
-                f"Found {len(sec_r['vulnerabilities'])} exposed secrets",
-                sec_r)
-            await self.send_event("API Agent",        "api",        "done",
-                f"Found {len(api_r['vulnerabilities'])} API issues",
-                api_r)
+                f"Found {len(dep_r['vulnerabilities'])} CVE issues", dep_r)
+            gc.collect()
+
+            await self.send_event("Secrets Agent", "secrets", "working", "Scanning for hardcoded secrets…")
+            sec_r = await asyncio.wait_for(
+                asyncio.to_thread(SecretsAgent(self.llm_config).run, scan_result),
+                timeout=60,
+            )
+            sec_r = self._safe(sec_r, {"vulnerabilities": []})
+            await self.send_event("Secrets Agent", "secrets", "done",
+                f"Found {len(sec_r['vulnerabilities'])} exposed secrets", sec_r)
+            gc.collect()
+
+            await self.send_event("API Agent", "api", "working", "Discovering API endpoints & auth gaps…")
+            api_r = await asyncio.wait_for(
+                asyncio.to_thread(APIAgent(self.llm_config).run, scan_result),
+                timeout=60,
+            )
+            api_r = self._safe(api_r, {"vulnerabilities": []})
+            await self.send_event("API Agent", "api", "done",
+                f"Found {len(api_r['vulnerabilities'])} API issues", api_r)
+            gc.collect()
 
             all_vulns = (
                 sast_r.get("vulnerabilities", []) +
@@ -191,6 +186,7 @@ class SwarmOrchestrator:
                 f"Discovered {len(chain_result.get('attack_chains', []))} multi-layer attack chains!",
                 chain_result,
             )
+            gc.collect()
 
             # ═══════════════════════════════════════════════════════════════
             # PHASE 4: PoC + Severity + Patch + Risk (parallel)
