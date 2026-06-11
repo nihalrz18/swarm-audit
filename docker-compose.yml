@@ -12,9 +12,15 @@ services:
       - ./backend/.env
     environment:
       - ENVIRONMENT=development
+      - VALIDATION_ENABLED=true
     volumes:
       - /tmp/reports:/tmp/reports
       - /tmp/swarmaudit_repos:/tmp/swarmaudit_repos
+      # Mount Docker socket so sandbox validation can spawn sibling containers.
+      # SECURITY NOTE: this grants the container access to the host Docker daemon.
+      # Do NOT use in untrusted or shared environments. Remove this line to disable
+      # sandbox validation locally (set VALIDATION_ENABLED=false in .env instead).
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

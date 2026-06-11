@@ -6,10 +6,17 @@ import uuid
 
 class Severity(str, Enum):
     CRITICAL = "CRITICAL"
-    HIGH = "HIGH"
-    MEDIUM = "MEDIUM"
-    LOW = "LOW"
-    INFO = "INFO"
+    HIGH     = "HIGH"
+    MEDIUM   = "MEDIUM"
+    LOW      = "LOW"
+    INFO     = "INFO"
+
+
+class ValidationVerdict(str, Enum):
+    VERIFIED     = "VERIFIED"
+    UNVERIFIED   = "UNVERIFIED"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    SKIPPED      = "SKIPPED"
 
 
 class Vulnerability(BaseModel):
@@ -28,6 +35,45 @@ class Vulnerability(BaseModel):
     patch_diff: Optional[str] = None
     references: List[str] = []
     layer: str = "code"  # code | dependency | secret | api
+    # enriched by new agents
+    validation_verdict: Optional[str] = None
+    compliance_frameworks: List[str] = []
+
+
+class ValidationEvidence(BaseModel):
+    vuln_id: str
+    verdict: str                        # ValidationVerdict value
+    method: str                         # python_snippet | static_check | dependency_cve | skipped
+    container_image: str = ""
+    command_executed: str = ""
+    exit_code: Optional[int] = None
+    stdout_excerpt: str = ""
+    stderr_excerpt: str = ""
+    timeout_hit: bool = False
+    duration_ms: int = 0
+    notes: str = ""
+
+
+class ComplianceMapping(BaseModel):
+    vuln_id: str
+    framework: str          # OWASP | SOC2 | HIPAA | PCI-DSS | GDPR | MITRE
+    control_id: str
+    title: str
+    rationale: str
+    impact_level: str       # HIGH | MEDIUM | LOW
+    remediation_note: str
+    auditor_summary: str = ""
+    developer_summary: str = ""
+
+
+class PRFindingSummary(BaseModel):
+    vuln_id: str
+    title: str
+    severity: str
+    validation_verdict: str
+    compliance_frameworks: List[str] = []
+    patch_available: bool = False
+    github_comment_snippet: str = ""
 
 
 class AttackChain(BaseModel):
@@ -64,6 +110,15 @@ class AuditRequest(BaseModel):
     github_url: str
 
 
+class PRScanRequest(BaseModel):
+    repo_owner: str
+    repo_name: str
+    pr_number: int
+    commit_sha: str
+    changed_files: List[str] = []
+    github_token: str = ""
+
+
 class AuditSession(BaseModel):
     session_id: str
     github_url: str
@@ -71,4 +126,9 @@ class AuditSession(BaseModel):
     vulnerabilities: List[Vulnerability] = []
     attack_chains: List[AttackChain] = []
     business_risk: Optional[BusinessRisk] = None
+    validation_results: List[ValidationEvidence] = []
+    compliance_mappings: List[ComplianceMapping] = []
     report_ready: bool = False
+    pr_status: Optional[str] = None
+    changed_files_only: bool = False
+    localization_language: str = "en"

@@ -72,6 +72,64 @@ CREATE TABLE IF NOT EXISTS patches (
 );
 """
 
+ALTER_AUDIT_SESSIONS_NEW_COLS = """
+ALTER TABLE audit_sessions
+    ADD COLUMN IF NOT EXISTS pr_status TEXT,
+    ADD COLUMN IF NOT EXISTS localization_language TEXT DEFAULT 'en',
+    ADD COLUMN IF NOT EXISTS changed_files_only BOOLEAN DEFAULT FALSE;
+"""
+
+CREATE_VALIDATION_RESULTS = """
+CREATE TABLE IF NOT EXISTS validation_results (
+    id SERIAL PRIMARY KEY,
+    session_id UUID REFERENCES audit_sessions(id) ON DELETE CASCADE,
+    vuln_id TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    method TEXT,
+    container_image TEXT,
+    command_executed TEXT,
+    exit_code INTEGER,
+    stdout_excerpt TEXT,
+    stderr_excerpt TEXT,
+    timeout_hit BOOLEAN DEFAULT FALSE,
+    duration_ms INTEGER DEFAULT 0,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+"""
+
+CREATE_COMPLIANCE_MAPPINGS = """
+CREATE TABLE IF NOT EXISTS compliance_mappings (
+    id SERIAL PRIMARY KEY,
+    session_id UUID REFERENCES audit_sessions(id) ON DELETE CASCADE,
+    vuln_id TEXT NOT NULL,
+    framework TEXT NOT NULL,
+    control_id TEXT,
+    title TEXT,
+    rationale TEXT,
+    impact_level TEXT,
+    remediation_note TEXT,
+    auditor_summary TEXT,
+    developer_summary TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+"""
+
+CREATE_GITHUB_ACTIONS_LOG = """
+CREATE TABLE IF NOT EXISTS github_actions_log (
+    id SERIAL PRIMARY KEY,
+    session_id UUID REFERENCES audit_sessions(id) ON DELETE CASCADE,
+    repo_owner TEXT,
+    repo_name TEXT,
+    pr_number INTEGER,
+    commit_sha TEXT,
+    check_run_id BIGINT,
+    comment_id BIGINT,
+    status TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+"""
+
 
 async def run_migrations():
     """Call this on FastAPI startup."""
@@ -81,6 +139,10 @@ async def run_migrations():
         CREATE_VULNERABILITIES,
         CREATE_ATTACK_CHAINS,
         CREATE_PATCHES,
+        ALTER_AUDIT_SESSIONS_NEW_COLS,
+        CREATE_VALIDATION_RESULTS,
+        CREATE_COMPLIANCE_MAPPINGS,
+        CREATE_GITHUB_ACTIONS_LOG,
     ]:
         await execute(statement)
     print("✅ Neon.tech migrations complete")

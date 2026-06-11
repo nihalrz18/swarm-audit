@@ -1,6 +1,10 @@
 """
-SwarmOrchestrator — runs the 5-phase multi-agent security audit swarm.
-Streams live events to the frontend via WebSocket.
+SwarmOrchestrator — runs the multi-agent security audit swarm.
+Phases 1-4: Scan → SAST/Dep/Secrets/API → AttackChain → PoC/Sev/Patch/Risk
+Phase 5: Validation (sandbox exploit verification)
+Phase 6: Compliance (SOC2/HIPAA/PCI-DSS/GDPR/MITRE mapping)
+Phase 7: Report (PDF generation)
+Phase 8 (PR mode only): GitHub Guardian (PR comment + Check Run)
 """
 import asyncio
 import json
@@ -8,6 +12,7 @@ import gc
 import os
 import shutil
 import time
+from typing import List, Optional
 from fastapi import WebSocket
 
 from database.connection import execute
@@ -24,12 +29,30 @@ from agents.severity_agent import SeverityAgent
 from agents.patch_agent import PatchAgent
 from agents.risk_agent import RiskAgent
 from agents.report_agent import ReportAgent
+from agents.validation_agent import ValidationAgent
+from agents.compliance_agent import ComplianceAgent
 
 
 class SwarmOrchestrator:
-    def __init__(self, session_id: str, websocket: WebSocket):
-        self.session_id = session_id
-        self.websocket  = websocket
+    def __init__(
+        self,
+        session_id: str,
+        websocket: WebSocket,
+        pr_mode: bool = False,
+        pr_number: Optional[int] = None,
+        pr_sha: Optional[str] = None,
+        repo_full_name: Optional[str] = None,
+        changed_files: Optional[List[str]] = None,
+        github_token: Optional[str] = None,
+    ):
+        self.session_id      = session_id
+        self.websocket       = websocket
+        self.pr_mode         = pr_mode
+        self.pr_number       = pr_number
+        self.pr_sha          = pr_sha
+        self.repo_full_name  = repo_full_name
+        self.changed_files   = changed_files or []
+        self.github_token    = github_token or os.getenv("GITHUB_TOKEN", "")
         self.llm_config = {
             "config_list": [
                 {
@@ -238,11 +261,114 @@ class SwarmOrchestrator:
             )
 
             # ═══════════════════════════════════════════════════════════════
-            # PHASE 5: Report
+            # PHASE 5: Sandbox Exploit Validation
+            # ═══════════════════════════════════════════════════════════════
+            validation_r: dict = {"validation_results": [], "validated_count": 0, "verified_count": 0}
+            try:
+                await self.send_event(
+                    "Validation Agent", "validation", "working",
+                    "Validating top findings in ephemeral sandbox…",
+                )
+                validation_r = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ValidationAgent(self.llm_config).run,
+                        all_findings, poc_r,
+                    ),
+                    timeout=120,
+                )
+                validation_r = self._safe(validation_r, {"validation_results": [], "validated_count": 0, "verified_count": 0})
+                # Persist to DB
+                for ev in validation_r.get("validation_results", []):
+                    try:
+                        await execute(
+                            "INSERT INTO validation_results "
+                            "(session_id, vuln_id, verdict, method, container_image, "
+                            "command_executed, exit_code, stdout_excerpt, stderr_excerpt, "
+                            "timeout_hit, duration_ms, notes) "
+                            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) "
+                            "ON CONFLICT DO NOTHING",
+                            self.session_id,
+                            ev.get("vuln_id", ""),
+                            ev.get("verdict", "SKIPPED"),
+                            ev.get("method", ""),
+                            ev.get("container_image", ""),
+                            ev.get("command_executed", ""),
+                            ev.get("exit_code"),
+                            ev.get("stdout_excerpt", ""),
+                            ev.get("stderr_excerpt", ""),
+                            bool(ev.get("timeout_hit", False)),
+                            int(ev.get("duration_ms", 0)),
+                            ev.get("notes", ""),
+                        )
+                    except Exception:
+                        pass
+                await self.send_event(
+                    "Validation Agent", "validation", "done",
+                    f"Validated {validation_r.get('validated_count', 0)} findings — "
+                    f"{validation_r.get('verified_count', 0)} confirmed exploitable.",
+                    validation_r,
+                )
+            except Exception as ve:
+                await self.send_event(
+                    "Validation Agent", "validation", "error",
+                    f"Validation phase skipped: {str(ve)[:120]}",
+                )
+            gc.collect()
+
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE 6: Compliance Mapping
+            # ═══════════════════════════════════════════════════════════════
+            compliance_r: dict = {"compliance_mappings": [], "blast_radius": {}, "top_frameworks": [], "plain_language_summary": ""}
+            try:
+                await self.send_event(
+                    "Compliance Agent", "compliance", "working",
+                    "Mapping findings to SOC 2, HIPAA, PCI-DSS, GDPR, MITRE…",
+                )
+                compliance_r = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ComplianceAgent(self.llm_config).run,
+                        all_findings,
+                    ),
+                    timeout=90,
+                )
+                compliance_r = self._safe(compliance_r, {"compliance_mappings": [], "blast_radius": {}, "top_frameworks": [], "plain_language_summary": ""})
+                # Persist mappings to DB
+                for m in compliance_r.get("compliance_mappings", []):
+                    try:
+                        await execute(
+                            "INSERT INTO compliance_mappings "
+                            "(session_id, vuln_id, framework, control_id, control_name, "
+                            "owasp_category, rationale) "
+                            "VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",
+                            self.session_id,
+                            m.get("vuln_id", ""),
+                            m.get("framework", ""),
+                            m.get("control_id", ""),
+                            m.get("control_name", ""),
+                            m.get("owasp_category", ""),
+                            m.get("rationale", ""),
+                        )
+                    except Exception:
+                        pass
+                fws = ", ".join(compliance_r.get("top_frameworks", [])[:3])
+                await self.send_event(
+                    "Compliance Agent", "compliance", "done",
+                    f"Mapped {len(compliance_r.get('compliance_mappings', []))} controls. Top impact: {fws}",
+                    compliance_r,
+                )
+            except Exception as ce:
+                await self.send_event(
+                    "Compliance Agent", "compliance", "error",
+                    f"Compliance mapping skipped: {str(ce)[:120]}",
+                )
+            gc.collect()
+
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE 7: Report
             # ═══════════════════════════════════════════════════════════════
             await self.send_event(
                 "Report Agent", "report", "thinking",
-                "Synthesising full pentest report…",
+                "Synthesising full pentest report with validation & compliance data…",
             )
             report_data = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -252,6 +378,11 @@ class SwarmOrchestrator:
                 ),
                 timeout=120,
             )
+            # Inject validation + compliance into report_data for PDF generation
+            report_data["validation_results"]      = validation_r.get("validation_results", [])
+            report_data["compliance_mappings"]      = compliance_r.get("compliance_mappings", [])
+            report_data["compliance_blast_radius"]  = compliance_r.get("blast_radius", {})
+            report_data["plain_language_summary"]   = compliance_r.get("plain_language_summary", "")
             generate_pdf_report(self.session_id, report_data)
 
             # Update Neon DB with final stats
@@ -287,6 +418,78 @@ class SwarmOrchestrator:
                     "total_vulns":    len(all_vulns),
                 },
             )
+
+            # ═══════════════════════════════════════════════════════════════
+            # PHASE 8 (PR mode only): GitHub Guardian
+            # ═══════════════════════════════════════════════════════════════
+            if self.pr_mode and self.github_token and self.repo_full_name:
+                try:
+                    from integrations.github_guardian import (
+                        create_or_update_check_run,
+                        post_pr_security_comment,
+                    )
+                    await self.send_event(
+                        "GitHub Guardian", "github_guardian", "working",
+                        "Posting security summary to GitHub PR…",
+                    )
+                    comment_result = await asyncio.to_thread(
+                        post_pr_security_comment,
+                        self.github_token,
+                        self.repo_full_name,
+                        self.pr_number or 0,
+                        self.session_id,
+                        all_vulns,
+                        validation_r.get("validation_results", []),
+                        compliance_r.get("compliance_mappings", []),
+                        risk_r,
+                    )
+                    check_result: dict = {}
+                    if self.pr_sha:
+                        check_result = await asyncio.to_thread(
+                            create_or_update_check_run,
+                            self.github_token,
+                            self.repo_full_name,
+                            self.pr_sha,
+                            self.session_id,
+                            all_vulns,
+                            validation_r.get("validation_results", []),
+                        )
+                    # Log to DB
+                    try:
+                        await execute(
+                            "INSERT INTO github_actions_log "
+                            "(session_id, event_type, repo_full_name, pr_number, "
+                            "sha, conclusion, comment_url, check_run_url, error_message) "
+                            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                            self.session_id, "pr_scan",
+                            self.repo_full_name, self.pr_number, self.pr_sha,
+                            check_result.get("conclusion", ""),
+                            comment_result.get("comment_url", ""),
+                            check_result.get("check_run_url", ""),
+                            comment_result.get("error", "") or check_result.get("error", ""),
+                        )
+                        await execute(
+                            "UPDATE audit_sessions SET pr_status=$1 WHERE id=$2",
+                            check_result.get("conclusion", "commented"),
+                            self.session_id,
+                        )
+                    except Exception:
+                        pass
+
+                    await self.send_event(
+                        "GitHub Guardian", "github_guardian", "done",
+                        f"PR comment posted. Check Run: {check_result.get('conclusion', 'n/a')}",
+                        {
+                            "comment_url":   comment_result.get("comment_url", ""),
+                            "check_run_url": check_result.get("check_run_url", ""),
+                            "conclusion":    check_result.get("conclusion", ""),
+                        },
+                    )
+                except Exception as ge:
+                    await self.send_event(
+                        "GitHub Guardian", "github_guardian", "error",
+                        f"GitHub Guardian failed (non-fatal): {str(ge)[:200]}",
+                    )
 
         except asyncio.TimeoutError:
             await self.send_event(
